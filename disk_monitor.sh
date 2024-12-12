@@ -407,12 +407,12 @@ display_raid_info() {
             esac
             
             # Wyświetlenie stanu macierzy z pogrubieniem
-            echo -e "Stan macierzy: \033[1m${state}\033[0m"
+            echo -e "RAID state: \033[1m${state}\033[0m"
             
             # Get and format size properly
             local size=$(echo "$raid_detail" | grep "Array Size" | sed 's/.*: //')
             size=$(echo "$size" | awk '{printf "%.2f %s", $1/1024/1024, "GB"}')
-            echo -e "SIZE: $size"
+            echo -e "Size: $size"
             
             # Get device counts
             local total_devs=$(echo "$raid_detail" | grep "Raid Devices" | awk '{print $4}')
@@ -441,7 +441,7 @@ display_raid_info() {
             fi
 
             # Display health status
-            echo -e "HEALTH: \033[1m${health_status}\033[0m (Active: $active_devs/$total_devs, Failed: $failed_devs)"
+            echo -e "Health: \033[1m${health_status}\033[0m (Active: $active_devs/$total_devs, Failed: $failed_devs)"
             
             # List member disks
             echo "Member Disks:"
