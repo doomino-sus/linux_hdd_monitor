@@ -1,200 +1,156 @@
 #!/bin/bash
 
-# Define colors for output
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-# Define log directory and file
-LOG_DIR="/"
-LOG_FILE="disk_monitor.log"
-
-# Function to ensure log directory exists and is writable
-ensure_log_directory() {
-    echo "Konfigurowanie logowania w katalogu: $LOG_DIR"
-    
-    # Create log directory if it doesn't exist
-    if [ ! -d "$LOG_DIR" ]; then
-        if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
-            echo -e "${RED}Błąd: Nie można utworzyć katalogu logów: $LOG_DIR${NC}"
-            return 1
-        fi
-    fi
-    
-    # Verify write permissions to directory
-    if [ ! -w "$LOG_DIR" ]; then
-        echo -e "${RED}Błąd: Brak uprawnień do zapisu w katalogu logów: $LOG_DIR${NC}"
-        return 1
-    fi
-    
-    # Create or verify log file
-    if [ ! -f "$LOG_FILE" ]; then
-        if ! touch "$LOG_FILE" 2>/dev/null; then
-            echo -e "${RED}Błąd: Nie można utworzyć pliku logów: $LOG_FILE${NC}"
-            return 1
-        fi
-    elif [ ! -w "$LOG_FILE" ]; then
-        echo -e "${RED}Błąd: Brak uprawnień do zapisu w pliku logów: $LOG_FILE${NC}"
-        return 1
-    fi
-    
-    echo -e "${GREEN}Pomyślnie skonfigurowano logowanie w: $LOG_FILE${NC}"
-    return 0
-}
-
-
-# Disk Monitor - Script for monitoring disk health using SMART data
-# Requires: smartmontools package
-
-# Colors for output
+# Color definitions
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Log file location
-if [ "$REPLIT_DEV_MODE" == "true" ]; then
-    LOG_FILE="./disk_monitor.log"
-else
-    LOG_FILE="/var/log/disk_monitor.log"
-fi
-
-
-
-# Function to log messages with severity levels
-log_message() {
-    local level="$1"
-    local message="$2"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    
-    # Skip logging if directory check failed
-    [ -f "$LOG_FILE" ] || return 1
-    
-    local log_entry
-    case "$level" in
-        "INFO")
-            log_entry="$timestamp [INFO] $message"
-            ;;
-        "WARNING")
-            log_entry="$timestamp [WARNING] $message"
-            ;;
-        "ERROR")
-            log_entry="$timestamp [ERROR] $message"
-            ;;
-        *)
-            log_entry="$timestamp [INFO] $message"
-            ;;
-    esac
-    
-    if ! echo "$log_entry" >> "$LOG_FILE" 2>/dev/null; then
-        echo -e "${RED}Błąd: Nie można zapisać do pliku logów: $LOG_FILE${NC}" >&2
-        return 1
-    fi
-}
-
-# Function to check if running as root
+# Function to check if script is run as root
 check_root() {
-    if [ "$REPLIT_DEV_MODE" != "true" ] && [ "$EUID" -ne 0 ]; then
-        echo -e "${YELLOW}Uwaga: Skrypt uruchomiony bez uprawnień roota - niektóre funkcje mogą być ograniczone${NC}"
-        # Nie przerywamy działania skryptu, ale informujemy użytkownika
-        return 1
+    # Skip root check in Replit environment
+    if [[ -n "${REPL_ID}" || -n "${REPL_SLUG}" ]]; then
+        return 0
     fi
-    return 0
+    
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "${RED}Ten skrypt wymaga uprawnień roota${NC}"
+        exit 1
+    fi
 }
 
 # Function to check if smartctl is installed
 check_smartctl() {
     if ! command -v smartctl &> /dev/null; then
-        echo -e "${RED}Error: smartctl is not installed. Please install smartmontools package${NC}"
-        log_message "ERROR" "smartctl not found - nie można kontynuować monitorowania"
+        echo -e "${RED}smartctl nie jest zainstalowany. Zainstaluj pakiet smartmontools${NC}"
         exit 1
     fi
 }
 
-# Function to get all disk devices
-get_disks() {
-    local disks=($(lsblk -d -n -o NAME | grep -E '^(sd[a-z]+|nvme[0-9]+n[0-9]+)$'))
-    echo "${disks[@]}"
+# Function to ensure log directory exists
+ensure_log_directory() {
+    local log_dir="./logs"
+    echo "Konfigurowanie logowania w katalogu: $log_dir"
+    
+    if [ ! -d "$log_dir" ]; then
+        mkdir -p "$log_dir" 2>/dev/null || {
+            echo -e "${RED}Błąd: Brak uprawnień do utworzenia katalogu logów: $log_dir${NC}"
+            return 1
+        }
+    fi
+    
+    if [ ! -w "$log_dir" ]; then
+        echo -e "${RED}Błąd: Brak uprawnień do zapisu w katalogu logów: $log_dir${NC}"
+        return 1
+    fi
+    
+    return 0
 }
 
-# Function to determine disk type (SATA/NVMe)
+# Function to log messages
+log_message() {
+    local level="$1"
+    local message="$2"
+    local log_dir="./logs"
+    local log_file="$log_dir/disk_monitor.log"
+    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+    
+    # Check if logging is enabled
+    if [ ! -w "$log_dir" ]; then
+        return
+    fi
+    
+    echo "$timestamp [$level] $message" >> "$log_file"
+}
+
+# Function to get list of disks
+get_disks() {
+    
+    
+    local disks=""
+    
+    # Get SATA/SAS disks
+    for disk in $(lsblk -d -o NAME,TYPE | grep 'disk' | awk '{print $1}'); do
+        if [[ $disk =~ ^sd|^hd|^vd ]]; then
+            disks="$disks $disk"
+        fi
+    done
+    
+    # Get NVMe disks
+    for disk in $(lsblk -d -o NAME,TYPE | grep 'disk' | awk '{print $1}'); do
+        if [[ $disk =~ ^nvme ]]; then
+            disks="$disks $disk"
+        fi
+    done
+    
+    echo $disks
+}
+
+# Function to get disk type (sata/nvme)
 get_disk_type() {
     local disk="$1"
-    if [[ $disk == nvme* ]]; then
+    if [[ $disk =~ ^nvme ]]; then
         echo "nvme"
     else
         echo "sata"
     fi
 }
 
-# Function to get SMART status for a disk
+# Function to get SMART status
 get_smart_status() {
     local disk="$1"
     local type="$2"
     
-    if [ "$REPLIT_DEV_MODE" == "true" ]; then
-        # Symulowane dane w trybie developerskim
-        if [ "$disk" == "sda" ]; then
-            echo "PASSED"
-        elif [ "$disk" == "sdb" ]; then
-            echo "FAILED"
-        else
-            echo "PASSED"
-    # Log SMART status changes
-    if [ -n "$status" ]; then
-        if [ "$status" != "PASSED" ] && [ "$status" != "OK" ]; then
-            log_message "WARNING" "Dysk /dev/$disk - nieprawidłowy status SMART: $status"
-        else
-            log_message "INFO" "Dysk /dev/$disk - status SMART: $status"
-        fi
-    fi
-        fi
-        return
-    fi
-
-    local status
-    if [ "$type" == "nvme" ]; then
-        status=$(smartctl -H "/dev/$disk" 2>/dev/null | grep -i "smart overall-health" | awk '{print $NF}')
-    else
-        status=$(smartctl -H "/dev/$disk" 2>/dev/null | grep -i "smart overall-health" | awk '{print $NF}')
-    fi
     
-    # Log SMART status changes
-    if [ -n "$status" ]; then
-        if [ "$status" != "PASSED" ] && [ "$status" != "OK" ]; then
-            log_message "WARNING" "Dysk /dev/$disk - nieprawidłowy status SMART: $status"
-        else
-            log_message "INFO" "Dysk /dev/$disk - status SMART: $status"
-        fi
-    fi
-
-    if [ -z "$status" ]; then
-        echo "UNKNOWN"
+    
+    if [ "$type" == "nvme" ]; then
+        smartctl -H "/dev/$disk" 2>/dev/null | grep "SMART.*overall-health" | awk '{print $6}'
     else
-        echo "$status"
+        smartctl -H "/dev/$disk" 2>/dev/null | grep "SMART overall-health" | awk '{print $6}'
     fi
 }
 
-# Function to get disk health percentage
+# Function to get disk power-on time in years and days
+get_disk_power_on_days() {
+    local disk="$1"
+    local type="$2"
+    
+    local power_on_hours
+    if [ "$type" == "nvme" ]; then
+        power_on_hours=$(smartctl -a "/dev/$disk" 2>/dev/null | grep -i "Power On Hours" | awk '{print $4}')
+    else
+        power_on_hours=$(smartctl -a "/dev/$disk" 2>/dev/null | grep "Power_On_Hours" | awk '{print $10}')
+    fi
+    
+    if [ -n "$power_on_hours" ]; then
+        local total_days=$((power_on_hours / 24))
+        local years=$((total_days / 365))
+        local remaining_days=$((total_days % 365))
+        
+        # Handle year format based on the number with proper Polish grammar
+        local year_text
+        if [ "$years" -eq 0 ]; then
+            year_text="lat"
+        elif [ "$years" -eq 1 ]; then
+            year_text="rok"
+        elif [ "$years" -ge 2 ] && [ "$years" -le 4 ]; then
+            year_text="lata"
+        else
+            year_text="lat"
+        fi
+
+        # Always show full format with years and days, ensuring both are displayed even if zero
+        echo "$years $year_text, $remaining_days dni"
+    else
+        echo "N/A"
+    fi
+}
+
 get_disk_health_percentage() {
     local disk="$1"
     local type="$2"
     
-    if [ "$REPLIT_DEV_MODE" == "true" ]; then
-        case "$disk" in
-            "sda")
-                echo "95"
-                ;;
-            "sdb")
-                echo "45"
-                ;;
-            *)
-                echo "85"
-                ;;
-        esac
-        return
-    fi
+    
     
     local health=100
     local info
@@ -226,23 +182,7 @@ get_disk_health_percentage() {
 get_mount_points() {
     local disk="$1"
     
-    if [ "$REPLIT_DEV_MODE" == "true" ]; then
-        case "$disk" in
-            "sda")
-                echo "/"
-                ;;
-            "sdb")
-                echo "/home"
-                ;;
-            "sdc")
-                echo "/mnt/data"
-                ;;
-            *)
-                echo "Not mounted"
-                ;;
-        esac
-        return
-    fi
+    
     
     local mount_points=$(lsblk -n -o MOUNTPOINT /dev/"$disk"* | grep -v '^$' | sort -u | tr '\n' ', ' | sed 's/,$//')
     if [ -z "$mount_points" ]; then
@@ -258,23 +198,7 @@ get_disk_usage() {
     local disk="$1"
     local mount_point
     
-    if [ "$REPLIT_DEV_MODE" == "true" ]; then
-        case "$disk" in
-            "sda")
-                echo "Used: 234GB (47%)"
-                ;;
-            "sdb")
-                echo "Used: 2.1TB (60%)"
-                ;;
-            "sdc")
-                echo "Used: 756GB (75%)"
-                ;;
-            *)
-                echo "Usage information unavailable"
-                ;;
-        esac
-        return
-    fi
+    
     
     # Get all mount points for the disk
     mount_point=$(lsblk -n -o MOUNTPOINT /dev/"$disk"* | grep -v '^$' | grep -v '\[SWAP\]' | head -n 1)
@@ -288,46 +212,11 @@ get_disk_usage() {
         echo "Usage information unavailable"
     fi
 }
+
 get_partition_info() {
     local disk="$1"
     
-    if [ "$REPLIT_DEV_MODE" == "true" ]; then
-        case "$disk" in
-            "sda")
-                echo -e "sda1 - / (50GB, ext4)\nsda2 - swap (8GB)"
-                ;;
-            "sdb")
-                echo -e "sdb1 - /home (3.5TB, ext4)\nsdb2 - swap (8GB)"
-                ;;
-            "sdc")
-                echo -e "sdc1 - /mnt/data (1TB, ext4)"
-                ;;
-            *)
-                echo "No partitions found"
-                ;;
-        esac
-        return
-    fi
     
-    if [ "$REPLIT_DEV_MODE" == "true" ]; then
-        case "$disk" in
-            "sda")
-                echo "sda1 - / (50GB, ext4)"
-                echo "sda2 - swap (8GB)"
-                ;;
-            "sdb")
-                echo "sdb1 - /home (3.5TB, ext4)"
-                echo "sdb2 - swap (8GB)"
-                ;;
-            "sdc")
-                echo "sdc1 - /mnt/data (1TB, ext4)"
-                ;;
-            *)
-                echo "No partitions found"
-                ;;
-        esac
-        return
-    fi
     
     local partitions
     partitions=$(lsblk -n -o NAME,SIZE,FSTYPE,MOUNTPOINT,TYPE /dev/"$disk" | grep -v "^$disk " || echo "")
@@ -351,23 +240,7 @@ get_partition_info() {
 get_raid_info() {
     local disk="$1"
     
-    if [ "$REPLIT_DEV_MODE" == "true" ]; then
-        case "$disk" in
-            "sda")
-                echo -e "Status: Active\nType: RAID 1 (Mirror)\nArray: /dev/md0\nMount: /\nRaid devices: 2\nState: clean\nTotal Size: 2TB\nRAID Health: Optimal"
-                ;;
-            "sdb")
-                echo -e "Status: Active\nType: RAID 1 (Mirror)\nArray: /dev/md0\nMount: /\nRaid devices: 2\nState: clean\nTotal Size: 2TB\nRAID Health: Optimal"
-                ;;
-            "sdc")
-                echo "No RAID configuration"
-                ;;
-            *)
-                echo "No RAID configuration"
-                ;;
-        esac
-        return
-    fi
+    
     
     # Check if disk is part of any RAID array
     local raid_part=$(lsblk -n -o NAME,TYPE /dev/"$disk"* | grep "raid" || true)
@@ -402,60 +275,7 @@ get_disk_info() {
     local disk="$1"
     local type="$2"
     
-    if [ "$REPLIT_DEV_MODE" == "true" ]; then
-        if [ "$type" == "nvme" ]; then
-            echo -e "Producent/Model: Samsung / 970 EVO Plus NVMe SSD"
-            echo -e "Serial Number: S4EDNX0M614821K"
-            echo -e "Size: 1TB"
-            echo -e "Temperature: 45°C"
-            echo -e "Health: $(get_disk_health_percentage "$disk" "$type")%"
-            echo -e "Mount points: $(get_mount_points "$disk")"
-            echo -e "\nPartycje:"
-            echo -e "$(get_partition_info "$disk")"
-            echo -e "\nInformacje o RAID:"
-            echo -e "$(get_raid_info "$disk")"
-        else
-            case "$disk" in
-                "sda")
-                    echo -e "Producent/Model: Western Digital / Blue HDD"
-                    echo -e "Serial Number: WD-WXC1A75LC4K1"
-                    echo -e "Size: 2TB"
-                    echo -e "Temperature: 35°C"
-                    echo -e "Health: $(get_disk_health_percentage "$disk" "$type")%"
-                    echo -e "Mount points: $(get_mount_points "$disk")"
-                    echo -e "\nPartycje:"
-                    echo -e "$(get_partition_info "$disk")"
-                    echo -e "\nInformacje o RAID:"
-                    echo -e "$(get_raid_info "$disk")"
-                    ;;
-                "sdb")
-                    echo -e "Producent/Model: Seagate / Barracuda HDD"
-                    echo -e "Serial Number: ZCH0KL4M"
-                    echo -e "Size: 4TB"
-                    echo -e "Temperature: 52°C"
-                    echo -e "Health: $(get_disk_health_percentage "$disk" "$type")%"
-                    echo -e "Mount points: $(get_mount_points "$disk")"
-                    echo -e "\nPartycje:"
-                    echo -e "$(get_partition_info "$disk")"
-                    echo -e "\nInformacje o RAID:"
-                    echo -e "$(get_raid_info "$disk")"
-                    ;;
-                *)
-                    echo -e "Model: Generic HDD"
-                    echo -e "Serial Number: UNKNOWN"
-                    echo -e "Size: 1TB"
-                    echo -e "Temperature: 40°C"
-                    echo -e "Health: $(get_disk_health_percentage "$disk" "$type")%"
-                    echo -e "Mount points: $(get_mount_points "$disk")"
-                    echo -e "\nPartycje:"
-                    echo -e "$(get_partition_info "$disk")"
-                    echo -e "\nInformacje o RAID:"
-                    echo -e "$(get_raid_info "$disk")"
-                    ;;
-            esac
-        fi
-        return
-    fi
+    
     
     local info
     if [ "$type" == "nvme" ]; then
@@ -484,6 +304,8 @@ get_disk_info() {
     echo -e "Serial Number: $serial"
     echo -e "Size: $size"
     echo -e "Temperature: ${temp}°C"
+    local power_on_days=$(get_disk_power_on_days "$disk" "$type")
+    echo -e "Czas pracy: ${power_on_days}"
     local health_percentage=$(get_disk_health_percentage "$disk" "$type")
     if [ "$health_percentage" == "100" ]; then
         echo -e "Health: ${GREEN}${health_percentage}%${NC}"
@@ -520,29 +342,14 @@ display_disk_info() {
     get_disk_info "$disk" "$type"
 }
 
-# Main function
 # Function to display RAID information
 display_raid_info() {
     local raid_arrays=($(ls /dev/md* 2>/dev/null | grep -o 'md[0-9]*' || true))
     
     if [ ${#raid_arrays[@]} -eq 0 ]; then
-        if [ "$REPLIT_DEV_MODE" == "true" ]; then
-            # Symulowane dane w trybie developerskim
-            echo -e "\n${YELLOW}=== RAID Arrays ===${NC}"
-            echo -e "\nArray: /dev/md0"
-            echo "Type: RAID 1 (Mirror)"
-            echo -e "State: ${GREEN}active${NC}"
-            echo "Size: 1862.89 GB"
-            echo "Health: Optimal (Active: 2/2, Failed: 0)"
-            echo "Member Disks:"
-            echo "  - /dev/sdc1"
-            echo "  - /dev/sdb1"
-            return
-        else
-            echo -e "\n${YELLOW}=== RAID Arrays ===${NC}"
-            echo "No RAID arrays detected"
-            return
-        fi
+        echo -e "\n${YELLOW}=== RAID Arrays ===${NC}"
+        echo "No RAID arrays detected"
+        return
     fi
     
     # Use associative array to prevent duplicates
@@ -562,50 +369,79 @@ display_raid_info() {
             local raid_level=$(echo "$raid_detail" | grep "Raid Level" | sed 's/.*: //')
             echo "Type: $raid_level"
             
-# Get state and color it appropriately
-            local state=$(echo "$raid_detail" | grep "State :" | sed 's/.*: //')
-            case "${state,,}" in
-                "active"|"clean")
-                    echo -e "State: ${RED}${state}${NC}"
+            # Pobranie stanu i konwersja na wielkie litery
+            local state=$(echo "$raid_detail" | grep "State :" | sed 's/.*: //' | tr '[:lower:]' '[:upper:]')
+            
+            # System kolorowania statusów RAID Array
+            # Stany i ich kolory:
+            # Zielony (${GREEN}): CLEAN, ACTIVE - stany optymalne
+            # Czerwony (${RED}): DEGRADED, FAULTY, INACTIVE, REMOVED - stany problematyczne
+            # Pomarańczowy (${YELLOW}): RESYNCING, RECOVERING, SPARE, REBUILDING - stany przejściowe
+            local state_color="${RED}"  # domyślnie czerwony dla nieznanych stanów
+            local message
+            
+            case "$state" in
+                # Stany optymalne - kolor zielony
+                "CLEAN"|"ACTIVE")
+                    state_color="${GREEN}"
+                    message="stan optymalny"
+                    log_message "INFO" "RAID /dev/$array - stan optymalny: $state"
+                    ;;
+                # Stany przejściowe - kolor pomarańczowy
+                "RESYNCING"|"RECOVERING"|"SPARE"|"REBUILDING")
+                    state_color="${YELLOW}"
+                    message="stan przejściowy"
+                    log_message "INFO" "RAID /dev/$array - stan przejściowy: $state"
+                    ;;
+                # Stany problematyczne - kolor czerwony
+                "DEGRADED"|"FAULTY"|"INACTIVE"|"REMOVED")
+                    state_color="${RED}"
+                    message="stan problematyczny"
+                    log_message "WARNING" "RAID /dev/$array - stan problematyczny: $state"
                     ;;
                 *)
-                    echo -e "State: ${GREEN}${state}${NC}"
+                    state_color="${RED}"
+                    message="nieznany stan"
+                    log_message "WARNING" "RAID /dev/$array - wykryto nieznany stan: $state"
                     ;;
             esac
+            
+            # Wyświetlenie stanu macierzy z pogrubieniem
+            echo -e "Stan macierzy: \033[1m${state}\033[0m"
             
             # Get and format size properly
             local size=$(echo "$raid_detail" | grep "Array Size" | sed 's/.*: //')
             size=$(echo "$size" | awk '{printf "%.2f %s", $1/1024/1024, "GB"}')
-            echo "Size: $size"
+            echo -e "SIZE: $size"
             
             # Get device counts
             local total_devs=$(echo "$raid_detail" | grep "Raid Devices" | awk '{print $4}')
             local active_devs=$(echo "$raid_detail" | grep "Active Devices" | awk '{print $4}')
             local failed_devs=$(echo "$raid_detail" | grep "Failed Devices" | awk '{print $4}')
             
-            # Calculate health status
-            [ "$failed_devs" == "0" ] && local health="Optimal" || local health="Degraded"
-            
-            # Log RAID state and health information
-            if [ -n "$state" ]; then
-                if [[ "${state,,}" =~ ^(active|clean)$ ]]; then
-                    log_message "INFO" "RAID /dev/$array - stan: $state"
-                else
-                    log_message "WARNING" "RAID /dev/$array - wykryto nieprawidłowy stan: $state"
-                fi
+            # Calculate health status and color
+            local health_status="OPTIMAL"
+            local health_color="${GREEN}"
+            if [ "$failed_devs" -gt 0 ]; then
+                health_status="DEGRADED"
+                health_color="${RED}"
             fi
+            
 
+            # Logowanie informacji o uszkodzonych urządzeniach
             if [ "$failed_devs" -gt 0 ]; then
                 log_message "WARNING" "RAID /dev/$array - liczba uszkodzonych urządzeń: $failed_devs"
             fi
             
-            if [ "$health" != "Optimal" ]; then
-                log_message "WARNING" "RAID /dev/$array - stan zdrowia: $health (Aktywne: $active_devs/$total_devs)"
+            # Logowanie stanu zdrowia macierzy
+            if [ "$health_status" != "OPTIMAL" ]; then
+                log_message "WARNING" "RAID /dev/$array - stan zdrowia: $health_status (Aktywne: $active_devs/$total_devs)"
             else
-                log_message "INFO" "RAID /dev/$array - stan zdrowia: $health (Aktywne: $active_devs/$total_devs)"
+                log_message "INFO" "RAID /dev/$array - stan zdrowia: $health_status (Aktywne: $active_devs/$total_devs)"
             fi
 
-            echo "Health: $health (Active: $active_devs/$total_devs, Failed: $failed_devs)"
+            # Display health status
+            echo -e "HEALTH: \033[1m${health_status}\033[0m (Active: $active_devs/$total_devs, Failed: $failed_devs)"
             
             # List member disks
             echo "Member Disks:"
@@ -613,6 +449,7 @@ display_raid_info() {
         fi
     done
 }
+
 main() {
     check_root
     check_smartctl
